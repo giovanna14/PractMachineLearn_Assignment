@@ -97,11 +97,14 @@ We carry out some exploratory analysis on the training set to
 identify possible trends and outliers.
 
 ```{r pairs,cache=TRUE}
-featurePlot(x=trainset[,c(1:26)],y=trainset$classe,plot="pairs")
-featurePlot(x=trainset[,c(27:52)],y=trainset$classe,plot="pairs")
+featurePlot(x=trainset[,c("roll_belt","pitch_forearm",
+                          "roll_dumbbell","roll_forearm",
+                          "accel_dumbbell_z")],y=trainset$classe,
+            plot="pairs")
 ```
 
-
+There are some outliers, and one would have to investigate them.
+However, in the following we proceed without any data processing.
 
 ##Building predictive models##
 
