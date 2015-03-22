@@ -1,0 +1,288 @@
+---
+title: "Practical Machine Learning - Course Project"
+author: "Giovanna14"
+date: "22/03/2015"
+output: html_document
+---
+
+##Synopsis##
+
+This project is based on the Weight Lifting Exercise Dataset 
+available at http://groupware.les.inf.puc-rio.br/har. 
+The dataset is part of a human activity recognition research
+making use of wearable accelerometers to determine how well
+a given activity is performed and automatically detect execution
+mistakes. The goal of this project is to to use this dataset to build 
+a machine learning algorithm that predicts the manner in which the 
+participants executed the exercise.
+
+##Dataset##
+
+Data were collected from
+accelerometers on the belt, forearm, arm, and dumbbell of 6 people,
+while they were lifting a dumbbell in 5 different ways, a correct 
+one and 4 different wrong ways, simulating typical mistakes.
+The variable `classe` in the dataset defines the way how the exercise
+was performed. It takes up 5 possible values, A for
+correct excution and B, C, D, E for each of the 4 simulated 
+execution mistakes. 
+
+```{r dataset,cache=TRUE}
+#downloading data
+URL1 <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+URL2 <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+file1 <- "pml-training.csv"
+file2 <- "pml-testing.csv"
+if (!file.exists(file1)){download.file(URL1,file1,method="curl")}
+if (!file.exists(file2)){download.file(URL2,file2,method="curl")}
+```
+A preliminary inspection of the pml-training.csv file shows 
+the presence of several variables whose values are almost only NAs, 
+blank values, or "#DIV/0!". So while loading the data into data frames
+we redifine all these values as NAs.
+
+```{r loading, cache=TRUE}
+training <- read.csv(file1,na.strings=c("NA","","#DIV/0!"))
+testing <- read.csv(file2,na.strings=c("NA","","#DIV/0!"))
+```
+
+##Preparatory steps##
+
+For our purposes we use the `caret` package, so we load this and
+other additional packages that are required subsequently for modelling 
+and plotting purposes.
+
+```{r packages}
+library(ggplot2);library(lattice);library(caret)
+library(parallel); library(doParallel) #for parallel processing
+library(AppliedPredictiveModeling)
+library(randomForest);library(rpart);library(partykit)
+```
+
+Since there is a large number of observations, we can split the provided
+training set into three subsets, a training, 
+a validation, and a testing set approximately 
+comprising 60%, 20%, and 20% of the original set, respectively. 
+Since there are several columns that contains almost only NAs,
+implementing an imputing strategy for these columns does not seem
+appropriate, hence we discard them from our newly created 
+training set. In so doing, we are automatically discarding the
+columns containing computed statistical quantities (e.g. mean, kurtosis,
+skewness), with the exception of total accelerations.  
+We also discard the first 7 columns that do not
+contain useful information for the purpose of modelling (sequential 
+numbers, names of participants, time stamps, windows for measurement
+collection).
+
+```{r partitioning and cleaning,cache=TRUE}
+## split original training set into a training, a validation and
+## a test set
+set.seed(1521)
+inTrain <- createDataPartition(y=training$classe,p=0.6,list=FALSE)
+trainset <- training[inTrain,]
+notrain <- training[-inTrain,]
+inVal <- createDataPartition(y=notrain$classe,p=0.5,list=FALSE)
+validset <- notrain[inVal,]
+testset <- notrain[-inVal,]
+# remove first 7 columns that are not useful for modelling
+trainset <- trainset[,-c(1:7)]
+# remove columns with NAs
+trainset <- trainset[,colSums(is.na(trainset))==0]
+dim(trainset)
+```
+
+##Exploratory analysis##
+
+We carry out some exploratory analysis on the training set to
+identify possible trends and outliers.
+
+```{r pairs,cache=TRUE}
+featurePlot(x=trainset[,c(1:26)],y=trainset$classe,plot="pairs")
+featurePlot(x=trainset[,c(27:52)],y=trainset$classe,plot="pairs")
+```
+
+
+
+##Building predictive models##
+
+In the following we use `train` from the `caret` package to build
+predictive models with different subsets of predictors and with
+two alternative models, i.e. the tree-based model `rpart` and 
+the random forest model `rf`.
+
+###Tree-based models###
+
+We create an rpart model with all predictors in the cleaned training set.
+
+```{r rpart with all predictors,cache=TRUE}
+set.seed(3528)
+registerDoParallel(clust <- makeForkCluster(3))
+fit1_rpart <- train(classe ~ ., data=trainset,method="rpart",
+            trControl=trainControl(method="cv",number=5,
+                                     allowParallel=TRUE) 
+            )
+stopCluster(clust)
+fit1_rpart$finalModel
+# importance of variables
+varImp(fit1_rpart)
+```
+
+The resulting classification tree is shown in Figure 1.
+
+```{r rpart model trees,cache=TRUE}
+fit1party <- as.party(fit1_rpart$finalModel)
+plot(fit1party,main="rpart model - all predictors")
+```
+
+**Figure1.** Model trees obtained using an rpart model with all 
+predictors.
+
+### Random forest models###
+
+For random forest models we first use all predictors in the 
+cleaned training set and then we try to progressively reduce the
+number of predictors.
+
+```{r random forest with all predictors,cache=TRUE}
+# use parallel processing on 3 CPUs to train with random forest with all predictors
+set.seed(3528)
+registerDoParallel(clust <- makeForkCluster(3))
+fit1_rf <- train(classe ~ ., data=trainset,method="rf",ntree=200,
+            trControl=trainControl(method="cv",number=5,
+                                     allowParallel=TRUE) 
+            )
+stopCluster(clust)
+fit1_rf$finalModel
+# importance of predictors
+imp1_rf <- varImp(fit1_rf)
+varImp(fit1_rf)
+# create a subset of the training set retaining only the most
+# important predictors
+mostImpVars1_rf <- rownames(imp1_rf$importance)[imp1_rf$importance>10]
+subtrainset1_rf <- trainset[,c(mostImpVars1_rf,"classe")]
+dim(subtrainset1_rf)
+```
+
+We now use only the most important predictors identified in the previous step.
+
+```{r random forest with most important predictors,cache=TRUE}
+# use parallel processing to train with random forest
+set.seed(3528)
+registerDoParallel(clust <- makeForkCluster(3))
+fit2_rf <- train(classe ~ ., data=subtrainset1_rf,method="rf",ntree=200,
+            trControl=trainControl(method="cv",number=5,
+                                     allowParallel=TRUE) 
+            )
+stopCluster(clust)
+fit2_rf$finalModel
+imp2_rf <- varImp(fit2_rf)
+varImp(fit2_rf)
+# create a subset of the training set retaining only the most
+# important predictors
+mostImpVars2_rf <- rownames(imp2_rf$importance)[imp2_rf$importance>5]
+subtrainset2_rf <- trainset[,c(mostImpVars2_rf,"classe")]
+dim(subtrainset2_rf)
+```
+
+We further reduce the number of predictors, based on the most
+important predictors identified in the previous step.
+
+```{r random forest further reduced predictors,cache=TRUE}
+# use parallel processing to train with random forest
+set.seed(3528)
+registerDoParallel(clust <- makeForkCluster(3))
+fit3_rf <- train(classe ~ ., data=subtrainset2_rf,method="rf",ntree=200,
+            trControl=trainControl(method="cv",number=5,
+                                     allowParallel=TRUE) 
+            )
+stopCluster(clust)
+fit3_rf$finalModel
+imp3_rf <- varImp(fit3_rf)
+varImp(fit3_rf)
+```
+
+###Comparing and fine-tuning random forest models###
+
+Then we have a look at the random forest model error rates.
+
+```{r model errors,cache=TRUE}
+par(mfrow=c(1,3))
+plot(fit1_rf$finalModel,type="l",
+     main="Error rates - Model 'fit1_rf'")
+legend("topright",colnames(fit1_rf$finalModel$err.rate),
+      col=1:6,cex=0.8,fill=1:6)
+plot(fit2_rf$finalModel,type="l",
+     main="Error rates - Model 'fit2_rf'")
+legend("topright",colnames(fit2_rf$finalModel$err.rate),
+      col=1:6,cex=0.8,fill=1:6)
+plot(fit3_rf$finalModel,type="l",
+     main="Error rates - Model 'fit3_rf'")
+legend("topright",colnames(fit3_rf$finalModel$err.rate),
+      col=1:6,cex=0.8,fill=1:6)
+par(mfcol=c(1,1))
+```
+**Figure 2.** Error rates for our three different rf models as a function
+of the number of trees.
+
+We apply the different models to the validation set and look at 
+the achieved accuracy, to choose our final model.
+
+```{r predicting,cache=TRUE}
+# look at confusion matrices on validation set
+predfit1_rp_valid <- predict(fit1_rpart,validset)
+predfit1_rf_valid <- predict(fit1_rf,validset)
+predfit2_rf_valid <- predict(fit2_rf,validset)
+predfit3_rf_valid <- predict(fit3_rf,validset)
+fit1_rp_CM <- confusionMatrix(predfit1_rp_valid,testset$classe)
+fit1_rf_CM <- confusionMatrix(predfit1_rf_valid,testset$classe)
+fit2_rf_CM <- confusionMatrix(predfit2_rf_valid,testset$classe)
+fit3_rf_CM <- confusionMatrix(predfit3_rf_valid,testset$classe)
+print(c("rpart model",fit1_rp_CM))
+print(c("random forest model1",fit1_rf_CM))
+print(c("random forest model 2",fit2_rf_CM))
+print(c("random forest model 3",fit3_rf_CM))
+```
+
+The rpart model has very low accuracy and we do not consider it
+any further. The accuracy of the random forest models decreases
+when reducing the number of predictors, but with 
+`r dim(subtrainset2_rf)[2]-1` predictors still has $\sim$ 98% accuracy,
+as evaluated on the validation set.
+although with an increased error rate for `classe` = B.
+We feel that we can retain this last model, that is slightly less
+accurate but simpler than the one which uses all predictors and 
+reduces the risk of overfitting.
+
+##Final model##
+
+Based on the results from the use of the validation set
+we choose as our final model `fit3_rf`. This was obtained with the
+random forest method with 200 trees and 5-folds cross-validation
+by using the `r dim(subtrainset2_rf)[2]-1` predictors that were 
+identified as the most important ones. 
+
+We apply this final model to our test set to evaluate the
+out-of-sample error.
+
+```{r prediction and confusion matrix on testset,cache=TRUE}
+predfit3_rf_test <- predict(fit3_rf,testset)
+confusionMatrix(predfit3_rf_test,testset$classe)
+```
+
+Finally, we use our chosen model to make predictions 
+on the provided testing dataset and save them to a text
+file for the submission part
+of this assignment.
+
+```{r sumission part,cache=TRUE}
+pred_final <- predict(fit3_rf,testing)
+answers <- as.character(pred_final)
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+pml_write_files(answers)
+```
